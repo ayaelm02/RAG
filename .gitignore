@@ -3,6 +3,19 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Python cache files
+__pycache__/
+*.pyc
+
+# Chroma DB directory
+rag_env/pdf_chroma_db/
+
+# Environment files
+.env
+
+# Virtual environment
+venv/
+
 # C extensions
 *.so
 
