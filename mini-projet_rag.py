@@ -1,14 +1,14 @@
 import os
-from langchain_community.llms import Ollama
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain.llms import OpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
+from dotenv import load_dotenv
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
+from langchain_community.llms import Ollama
+from langchain_community.embeddings import OllamaEmbeddings
 import streamlit as st
-from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
@@ -17,39 +17,53 @@ load_dotenv()
 persist_directory = "./rag_env/pdf_chroma_db"
 
 # Streamlit UI
-st.title("Streamlit RAG Application")
+st.title("Streamlit RAG Application (Ollama & Open-Source Models)")
 st.sidebar.title("Settings")
 
-# LLM Options
-llm_options = {
+# Define available models
+models = {
     "Ollama Llama 3.1": {
-        "class": Ollama,
+        "type": "ollama",
         "model": "llama3.1",
-        "base_url": "http://127.0.0.1:11434",
-        "embedding_class": OllamaEmbeddings
+        "base_url": "http://127.0.0.1:11434"
     },
-    "OpenAI GPT-3.5-Turbo": {
-        "class": OpenAI,
-        "model": "gpt-3.5-turbo",
-        "api_key": os.getenv("OPENAI_API_KEY"),
-        "embedding_class": OpenAIEmbeddings
+    "Flan-T5 (Small)": {
+        "type": "seq2seq",
+        "name": "google/flan-t5-small"
+    },
+    "MiniLM (Embeddings)": {
+        "type": "embedding",
+        "name": "sentence-transformers/all-MiniLM-L6-v2"
     }
 }
 
-# Select LLM
-selected_llm = st.sidebar.selectbox("Select LLM", options=llm_options.keys())
-llm_config = llm_options[selected_llm]
+# Sidebar to select LLM
+selected_model = st.sidebar.selectbox("Select Model", options=models.keys())
+model_config = models[selected_model]
 
-# Initialize LLM and embeddings
-llm = llm_config["class"](**{k: v for k, v in llm_config.items() if k not in ["class", "embedding_class"]})
-embed_model = llm_config["embedding_class"](**{k: v for k, v in llm_config.items() if k not in ["class", "embedding_class"]})
+# Initialize the selected model
+if model_config["type"] == "ollama":
+    llm = Ollama(model=model_config["model"], base_url=model_config["base_url"])
+    embed_model = OllamaEmbeddings(model=model_config["model"], base_url=model_config["base_url"])
+elif model_config["type"] == "seq2seq":
+    tokenizer = AutoTokenizer.from_pretrained(model_config["name"])
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_config["name"])
+elif model_config["type"] == "causal":
+    tokenizer = AutoTokenizer.from_pretrained(model_config["name"])
+    model = AutoModelForCausalLM.from_pretrained(model_config["name"])
+elif model_config["type"] == "embedding":
+    embedding_model = SentenceTransformer(model_config["name"])
 
 # Initialize or load Chroma vector store
-vector_store = Chroma(persist_directory=persist_directory, embedding_function=embed_model)
+if model_config["type"] in ["ollama", "embedding"]:
+    vector_store = Chroma(
+        persist_directory=persist_directory,
+        embedding_function=embed_model.encode if model_config["type"] == "ollama" else embedding_model.encode
+    )
+else:
+    vector_store = Chroma(persist_directory=persist_directory)
 
-# Define retriever and retrieval chain
-retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-retrieval_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+retriever = vector_store.as_retriever(search_kwargs={"k": 5"})
 
 # Document upload
 st.sidebar.subheader("Add Your Documents")
@@ -72,7 +86,23 @@ question = st.text_input("Enter your question here")
 if st.button("Get Answer"):
     if question:
         with st.spinner("Generating response..."):
-            response = retrieval_chain.run(question)
-            st.write("**Response:**", response)
+            # Generate response using the selected model
+            if model_config["type"] == "ollama":
+                response = llm.invoke({"prompt": question})
+                response_text = response.get("answer", "No response generated.")
+            elif model_config["type"] == "seq2seq":
+                inputs = tokenizer(question, return_tensors="pt")
+                outputs = model.generate(inputs["input_ids"], max_length=100)
+                response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            elif model_config["type"] == "causal":
+                inputs = tokenizer(question, return_tensors="pt")
+                outputs = model.generate(inputs["input_ids"], max_length=100)
+                response_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            elif model_config["type"] == "embedding":
+                retrieval_chain = RetrievalQA.from_chain_type(llm=None, retriever=retriever)
+                response_text = retrieval_chain.run(question)
+
+            # Display response
+            st.write("**Response:**", response_text)
     else:
         st.error("Please enter a question.")
